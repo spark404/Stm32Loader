@@ -1,4 +1,4 @@
-use clap::{Arg, Command, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use ihex::Reader;
 use std::error::Error;
 use std::fs::{read_dir, read_to_string, DirEntry};
@@ -72,7 +72,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     match connection.initialize() {
         Err(err) => match err {
-            dfuloader::DfuLoaderError::AllreadySynced() => {}
+            dfuloader::DfuLoaderError::AlreadySynced() => {}
             _ => {
                 print!("Error initializing: {:?}", err);
                 exit(1);

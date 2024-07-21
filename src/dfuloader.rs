@@ -21,7 +21,7 @@ pub enum Functions {
 #[derive(Debug)]
 pub enum DfuLoaderError {
     SyncError(),
-    AllreadySynced(),
+    AlreadySynced(),
     ProtocolError(),
     IOError(std::io::Error),
     NotImplemented(),
@@ -29,13 +29,13 @@ pub enum DfuLoaderError {
     CommandFailed(u8),
 }
 
-impl std::error::Error for DfuLoaderError {}
+impl Error for DfuLoaderError {}
 
 impl Display for DfuLoaderError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             DfuLoaderError::ProtocolError() => write!(f, "Protocol error"),
-            DfuLoaderError::AllreadySynced() => write!(f, "Connection already synced, dfu ready"),
+            DfuLoaderError::AlreadySynced() => write!(f, "Connection already synced, dfu ready"),
             DfuLoaderError::SyncError() => {
                 write!(f, "Failed to sync connection, no bootloader detected")
             }

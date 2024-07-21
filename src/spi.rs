@@ -10,7 +10,7 @@ use std::io::{Read, Write};
 use std::thread;
 
 pub fn new_spi_connection(device_name: &String) -> Result<Box<dyn DfuLoader>, Box<dyn Error>> {
-    let mut spi = Spidev::open("/dev/spidev0.1")?;
+    let mut spi = Spidev::open(format!("/dev/{}", device_name))?;
     let options = SpidevOptions::new()
         .bits_per_word(8)
         .max_speed_hz(20_000)
@@ -19,7 +19,7 @@ pub fn new_spi_connection(device_name: &String) -> Result<Box<dyn DfuLoader>, Bo
     spi.configure(&options)?;
 
     Ok(Box::new(SpiConnection {
-        spi: spi,
+        spi,
         nss: Gpio::new()?.get(25)?.into_output(),
     }))
 }
@@ -133,7 +133,7 @@ impl DfuLoader for SpiConnection {
         println!("{:02X?}", rx_buf);
 
         if rx_buf[2] == 0xA5 {
-            return Err(AllreadySynced());
+            return Err(AlreadySynced());
         }
         if rx_buf[2] != 0x79 {
             return Err(SyncError());
@@ -148,6 +148,49 @@ impl DfuLoader for SpiConnection {
         self.ack_frame()?;
 
         return Ok(vec![Functions::Get]);
+    }
+
+    fn write_unprotect(&mut self) -> Result<(), DfuLoaderError> {
+        self.send_command(0x73)?;
+
+        // Wait for the reset to complete
+        for _ in 0..10 {
+            match self.ack_frame() {
+                Err(err) => match err {
+                    CommandFailed(0xFF) => {
+                        thread::sleep(time::Duration::from_millis(100));
+                    }
+                    _ => {
+                        return Err(err);
+                    }
+                },
+                Ok(_) => {
+                    break;
+                }
+            }
+        }
+
+        // Do this twice for the additional reset on the F4?
+        for _ in 0..20 {
+            match self.ack_frame() {
+                Err(err) => match err {
+                    CommandFailed(0xFF) => {
+                        thread::sleep(time::Duration::from_millis(1000));
+                    }
+                    CommandFailed(0xA5) => {
+                        thread::sleep(time::Duration::from_millis(1000));
+                    }
+                    _ => {
+                        return Err(err);
+                    }
+                },
+                Ok(_) => {
+                    return Ok(());
+                }
+            }
+        }
+
+        Err(Timeout())
     }
 
     fn read_memory(&mut self, address: u32, size: usize) -> Result<Vec<u8>, DfuLoaderError> {
@@ -193,46 +236,6 @@ impl DfuLoader for SpiConnection {
         self.ack_frame()?;
 
         Ok(())
-    }
-
-    fn write_unprotect(&mut self) -> Result<(), DfuLoaderError> {
-        self.send_command(0x73)?;
-
-        // Wait for the reset to complete
-        for _ in 0..10 {
-            match self.ack_frame() {
-                Err(err) => match err {
-                    CommandFailed(0xFF) => {
-                        thread::sleep(time::Duration::from_millis(100));
-                    }
-                    _ => {
-                        return Err(err);
-                    }
-                },
-                Ok(_) => {
-                    break;
-                }
-            }
-        }
-
-        // Do this twice for the additional reset on the F4?
-        for _ in 0..10 {
-            match self.ack_frame() {
-                Err(err) => match err {
-                    CommandFailed(0xFF) => {
-                        thread::sleep(time::Duration::from_millis(100));
-                    }
-                    _ => {
-                        return Err(err);
-                    }
-                },
-                Ok(_) => {
-                    return Ok(());
-                }
-            }
-        }
-
-        Err(Timeout())
     }
 
     fn erase_all(&mut self) -> Result<(), DfuLoaderError> {
