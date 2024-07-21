@@ -19,7 +19,7 @@ struct Cli {
     )]
     porttype: Option<String>,
 
-    #[arg(long = "port", help = "The device path to a serial port")]
+    #[arg(long = "port", help = "The name of a device port, e.g. spidev0.1")]
     portname: Option<String>,
 
     #[command(subcommand)]
