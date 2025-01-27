@@ -82,11 +82,16 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Retrieve bootloader version");
     let f = connection.get_version()?;
-    println!("Bootloader version: {}", f);
+    println!("  Bootloader protocol version: 0x{:x}", f.version);
+
+    println!("Retrieve chip identification");
+    let chip_id = connection.get_id()?;
+    println!("  Chip ID 0x{:x}", chip_id.chipid);
 
     println!("Retrieve supported functions");
     let f = connection.supported_functions()?;
-    f.iter().for_each(|f| println!("\t{}", f));
+    println!("  Bootloader version: 0x{:x}", f.version);
+    f.supported_functions.iter().for_each(|f| println!("  {}", f));
 
     println!("Read option bytes");
     let v = connection.read_memory(0x1fffc008, 16)?;
@@ -114,10 +119,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             let content = Reader::new(&ihex);
 
             if erase {
+                println!("Sending full erase command");
                 connection.erase_all()?;
             }
 
             let mut address = 0_u32;
+            let mut bytes = 0;
             for r in content {
                 let record = r?;
                 match record {
@@ -130,7 +137,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                         println!("Entrypoint is at {:#08X}", sla);
                     }
                     ihex::Record::Data { offset, value } => {
+                        bytes += value.len() as u32;
                         connection.write_memory(address + offset as u32, value)?;
+                        print!("Write {:#08X}\r", address + offset as u32);
+                    }
+                    ihex::Record::EndOfFile => {
+                        println!("EndOfFile, {} bytes written", bytes);
                     }
                     x => {
                         println!("Ignored record: {:?}", x)

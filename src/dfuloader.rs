@@ -1,12 +1,15 @@
 use std::{error::Error, fmt::Display, fmt::Formatter};
-use crate::dfuloader::Functions::{Erase, ExtendedErase, ExtendedSpecial, Get, GetChecksum, GetId, GetVersion, Go, ReadMemory, ReadoutProtect, ReadoutUnprotect, Special, Unknown, WriteMemory, WriteProtect, WriteUnprotect};
+use crate::dfuloader::DfuLoaderError::ProtocolError;
 
 pub trait DfuLoader {
     fn initialize(&mut self) -> Result<(), DfuLoaderError>;
 
-    fn get_version(&mut self) -> Result<u8, DfuLoaderError>;
+    fn get_version(&mut self) -> Result<BootloaderOptions, DfuLoaderError>;
 
-    fn supported_functions(&mut self) -> Result<Vec<Functions>, DfuLoaderError>;
+    fn supported_functions(&mut self) -> Result<BootLoaderInfo, DfuLoaderError>;
+
+    /// Implement the Get ID command for a serial connection
+    fn get_id(&mut self) -> Result<BootloaderChipId, DfuLoaderError>;
 
     fn write_unprotect(&mut self) -> Result<(), DfuLoaderError>;
 
@@ -18,6 +21,7 @@ pub trait DfuLoader {
     fn go(&mut self, address: u32) -> Result<(), DfuLoaderError>;
 }
 
+#[derive(Debug)]
 pub enum Functions {
     Get,
     GetVersion,
@@ -53,6 +57,17 @@ pub struct BootLoaderInfo {
     pub supported_functions: Vec<Functions>,
 }
 
+#[derive(Debug)]
+pub struct BootloaderOptions {
+    pub version: u8,
+    pub options: u16
+}
+
+#[derive(Debug)]
+pub struct BootloaderChipId {
+    pub chipid: u16
+}
+
 impl Error for DfuLoaderError {}
 
 impl Display for DfuLoaderError {
@@ -80,22 +95,22 @@ impl From<std::io::Error> for DfuLoaderError {
 impl From<u8> for Functions {
     fn from(value: u8) -> Self {
         match value {
-            0x00 => Get,
-            0x01 => GetVersion,
-            0x02 => GetId,
-            0x11 => ReadMemory,
-            0x21 => Go,
-            0x31 => WriteMemory,
-            0x43 => Erase,
-            0x44 => ExtendedErase,
-            0x50 => Special,
-            0x51 => ExtendedSpecial,
-            0x63 => WriteProtect,
-            0x73 => WriteUnprotect,
-            0x82 => ReadoutProtect,
-            0x92 => ReadoutUnprotect,
-            0xA1 => GetChecksum,
-            _ => Unknown(value)
+            0x00 => Functions::Get,
+            0x01 => Functions::GetVersion,
+            0x02 => Functions::GetId,
+            0x11 => Functions::ReadMemory,
+            0x21 => Functions::Go,
+            0x31 => Functions::WriteMemory,
+            0x43 => Functions::Erase,
+            0x44 => Functions::ExtendedErase,
+            0x50 => Functions::Special,
+            0x51 => Functions::ExtendedSpecial,
+            0x63 => Functions::WriteProtect,
+            0x73 => Functions::WriteUnprotect,
+            0x82 => Functions::ReadoutProtect,
+            0x92 => Functions::ReadoutUnprotect,
+            0xA1 => Functions::GetChecksum,
+            _ => Functions::Unknown(value)
         }
     }
 }
@@ -103,22 +118,22 @@ impl From<u8> for Functions {
 impl Display for Functions {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let name = match self {
-            Get => "Get",
-            GetVersion => "GetVersion",
-            GetId => "GetId",
-            ReadMemory => "ReadMemory",
-            Go => "Go",
-            WriteMemory => "WriteMemory",
-            Erase => "Erase",
-            ExtendedErase => "ExtendedErase",
-            Special => "Special",
-            ExtendedSpecial => "ExtendedSpecial",
-            WriteProtect => "WriteProtect",
-            WriteUnprotect => "WriteUnprotect",
-            ReadoutProtect => "ReadoutProtect",
-            ReadoutUnprotect => "ReadoutUnprotect",
-            GetChecksum => "GetChecksum",
-            Unknown(_) => "Unknown {}",
+            Functions::Get => "Get",
+            Functions::GetVersion => "GetVersion",
+            Functions::GetId => "GetId",
+            Functions::ReadMemory => "ReadMemory",
+            Functions::Go => "Go",
+            Functions::WriteMemory => "WriteMemory",
+            Functions::Erase => "Erase",
+            Functions::ExtendedErase => "ExtendedErase",
+            Functions::Special => "Special",
+            Functions::ExtendedSpecial => "ExtendedSpecial",
+            Functions::WriteProtect => "WriteProtect",
+            Functions::WriteUnprotect => "WriteUnprotect",
+            Functions::ReadoutProtect => "ReadoutProtect",
+            Functions::ReadoutUnprotect => "ReadoutUnprotect",
+            Functions::GetChecksum => "GetChecksum",
+            Functions::Unknown(_) => "Unknown {}",
         };
         write!(f, "{}", name)
     }

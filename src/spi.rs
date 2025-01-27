@@ -1,4 +1,4 @@
-use crate::dfuloader::DfuLoader;
+use crate::dfuloader::{BootLoaderInfo, BootloaderChipId, BootloaderOptions, DfuLoader};
 use crate::dfuloader::DfuLoaderError;
 use crate::dfuloader::DfuLoaderError::*;
 use crate::dfuloader::Functions;
@@ -7,6 +7,7 @@ use spidev::{SpiModeFlags, Spidev, SpidevOptions, SpidevTransfer};
 use std::error::Error;
 use std::io::{Read, Write};
 use std::thread;
+use crate::dfuloader::Functions::Get;
 
 pub fn new_spi_connection(device_name: &String) -> Result<Box<dyn DfuLoader>, Box<dyn Error>> {
     let mut spi = Spidev::open(format!("/dev/{}", device_name))?;
@@ -136,17 +137,24 @@ impl DfuLoader for SpiConnection {
         Ok(())
     }
 
-    fn get_version(&mut self) -> Result<u8, DfuLoaderError> {
+    fn get_version(&mut self) -> Result<BootloaderOptions, DfuLoaderError> {
         return Err(NotImplemented())
     }
 
-    fn supported_functions(&mut self) -> Result<Vec<Functions>, DfuLoaderError> {
+    fn get_id(&mut self) -> Result<BootloaderChipId, DfuLoaderError> {
+        Err(NotImplemented())
+    }
+
+    fn supported_functions(&mut self) -> Result<BootLoaderInfo, DfuLoaderError> {
         self.send_command(0x00)?;
         let _data = self.read_variable_block()?;
 
         self.ack_frame()?;
 
-        Ok(vec![Functions::Get])
+        Ok(BootLoaderInfo{
+            version: 0,
+            supported_functions: vec!(Get)
+        })
     }
 
     fn write_unprotect(&mut self) -> Result<(), DfuLoaderError> {

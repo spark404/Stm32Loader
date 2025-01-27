@@ -1,4 +1,4 @@
-use crate::dfuloader::DfuLoader;
+use crate::dfuloader::{BootLoaderInfo, BootloaderChipId, BootloaderOptions, DfuLoader};
 use crate::dfuloader::DfuLoaderError;
 use crate::dfuloader::DfuLoaderError::*;
 use crate::dfuloader::Functions;
@@ -8,6 +8,8 @@ use serialport::{DataBits, SerialPort, StopBits};
 use std::error::Error;
 use std::io::{Read, Write};
 use std::{io, thread};
+use std::thread::sleep;
+use ihex::checksum;
 
 const ACK: u8 = 0x79;
 const NAK: u8 = 0x1F;
@@ -49,7 +51,8 @@ impl DfuLoader for SerialConnection {
         Err(Timeout())
     }
 
-    fn get_version(&mut self) -> Result<u8, DfuLoaderError> {
+    /// Implements the Get (0x00) command for a serial connection
+    fn get_version(&mut self) -> Result<BootloaderOptions, DfuLoaderError> {
         send_command(&mut self.port, 0x01)?;
 
         let mut version = [0u8; 4];
@@ -57,10 +60,18 @@ impl DfuLoader for SerialConnection {
             return Err(ProtocolError())
         }
 
-        Ok(version[0])
+        if version[3] != ACK {
+            return Err(ProtocolError())
+        }
+
+        Ok(BootloaderOptions {
+            version: version[0],
+            options: (version[1] as u16) << 8 | version[2] as u16,
+        })
     }
 
-    fn supported_functions(&mut self) -> Result<Vec<Functions>, DfuLoaderError> {
+    /// Implements the Get Version (0x01) command for a serial connection
+    fn supported_functions(&mut self) -> Result<BootLoaderInfo, DfuLoaderError> {
         send_command(&mut self.port, 0x00)?;
 
         let mut length = [0u8; 1];
@@ -90,10 +101,37 @@ impl DfuLoader for SerialConnection {
             return Err(ProtocolError())
         }
 
-        let bootloader_version = response[0];
         let mut function: Vec<Functions> = vec![];
         response[1..n-2].iter().for_each(|&x | function.push(Functions::from(x)));
-        Ok(function)
+        let bootloader_info = BootLoaderInfo {
+            version: response[0],
+            supported_functions: function
+        };
+        Ok(bootloader_info)
+    }
+
+    /// Implement the Get ID command for a serial connection
+    fn get_id(&mut self) -> Result<BootloaderChipId, DfuLoaderError> {
+        send_command(&mut self.port, 0x02)?;
+
+        let mut length = [0u8; 1];
+        if self.port.read_exact(&mut length).is_err() {
+            return Err(ProtocolError())
+        }
+
+        let response = read_bytes(&mut self.port, (length[0] + 2) as usize)?;
+        if response[2] != ACK {
+            return Err(ProtocolError())
+        }
+
+        if (response.len() != 3) {
+            // STM32 should always return two bytes + ack
+            return Err(ProtocolError())
+        }
+
+        Ok(BootloaderChipId {
+            chipid: (response[0]  as u16) << 8 | response[1] as u16
+        })
     }
 
     fn write_unprotect(&mut self) -> Result<(), DfuLoaderError> {
@@ -117,11 +155,45 @@ impl DfuLoader for SerialConnection {
     }
 
     fn write_memory(&mut self, address: u32, data: Vec<u8>) -> Result<(), DfuLoaderError> {
-        Err(NotImplemented())
+        if data.len() > 256 || data.len() == 0 {
+            return Err(ProtocolError())
+        }
+
+        send_command(&mut self.port, 0x31)?;
+
+        let mut data = [0u8; 5];
+        data[0..4].copy_from_slice(address.to_be_bytes().as_ref());
+        data[4] = calculate_checksum(&data[0..4]);
+        self.port.write_all(data.as_ref())?;
+        read_ack(&mut self.port)?;
+
+        let mut out = vec![(data.len() - 1) as u8];
+        out.extend(data);
+        let checksum = calculate_checksum(out.as_ref());
+        out.push(checksum);
+
+        self.port.write_all(out.as_ref())?;
+
+        read_ack(&mut self.port)
     }
 
     fn erase_all(&mut self) -> Result<(), DfuLoaderError> {
-        Err(NotImplemented())
+        send_command(&mut self.port, 0x44)?;
+
+        // Perform global erase
+        let erase_request = [0xFFu8, 0xFF, 0x00];
+        self.port.write_all(&erase_request)?;
+
+        // This can take a while, so loop on timeouts
+        for _ in 0..20 {
+            match read_ack(&mut self.port) {
+                Ok(_) => return Ok(()),
+                Err(DfuLoaderError::IOError(e)) if e.kind() == io::ErrorKind::TimedOut => (),
+                Err(e) => return Err(e),
+            }
+            sleep(Duration::from_millis(1000));
+        }
+        Err(DfuLoaderError::Timeout())
     }
 
     fn go(&mut self, address: u32) -> Result<(), DfuLoaderError> {
@@ -153,9 +225,7 @@ fn send_command(mut port: &mut Box<dyn SerialPort>, command: u8) -> Result<(), D
 
 fn read_ack(port: &mut Box<dyn SerialPort>) -> Result<(), DfuLoaderError> {
     let mut ack = [0u8; 1];
-    if port.read_exact(&mut ack).is_err() {
-        return Err(ProtocolError())
-    }
+    port.read_exact(&mut ack)?;
 
     if ack[0] != 0x79 {
         return Err(CommandFailed(ack[0]))
