@@ -1,12 +1,16 @@
 use std::{error::Error, fmt::Display, fmt::Formatter};
+use crate::dfuloader::Functions::{Erase, ExtendedErase, ExtendedSpecial, Get, GetChecksum, GetId, GetVersion, Go, ReadMemory, ReadoutProtect, ReadoutUnprotect, Special, Unknown, WriteMemory, WriteProtect, WriteUnprotect};
 
 pub trait DfuLoader {
     fn initialize(&mut self) -> Result<(), DfuLoaderError>;
+
+    fn get_version(&mut self) -> Result<u8, DfuLoaderError>;
+
     fn supported_functions(&mut self) -> Result<Vec<Functions>, DfuLoaderError>;
 
     fn write_unprotect(&mut self) -> Result<(), DfuLoaderError>;
 
-    fn read_memory(&mut self, address: u32, size: usize) -> Result<Vec<u8>, DfuLoaderError>;
+    fn read_memory(&mut self, address: u32, size: u8) -> Result<Vec<u8>, DfuLoaderError>;
     fn write_memory(&mut self, address: u32, data: Vec<u8>) -> Result<(), DfuLoaderError>;
 
     fn erase_all(&mut self) -> Result<(), DfuLoaderError>;
@@ -16,6 +20,21 @@ pub trait DfuLoader {
 
 pub enum Functions {
     Get,
+    GetVersion,
+    GetId,
+    ReadMemory,
+    Go,
+    WriteMemory,
+    Erase,
+    ExtendedErase,
+    Special,
+    ExtendedSpecial,
+    WriteProtect,
+    WriteUnprotect,
+    ReadoutProtect,
+    ReadoutUnprotect,
+    GetChecksum,
+    Unknown(u8),
 }
 
 #[derive(Debug)]
@@ -27,6 +46,11 @@ pub enum DfuLoaderError {
     NotImplemented(),
     Timeout(),
     CommandFailed(u8),
+}
+#[derive(Debug)]
+pub struct BootLoaderInfo {
+    pub version: u8,
+    pub supported_functions: Vec<Functions>,
 }
 
 impl Error for DfuLoaderError {}
@@ -50,5 +74,52 @@ impl Display for DfuLoaderError {
 impl From<std::io::Error> for DfuLoaderError {
     fn from(err: std::io::Error) -> Self {
         DfuLoaderError::IOError(err)
+    }
+}
+
+impl From<u8> for Functions {
+    fn from(value: u8) -> Self {
+        match value {
+            0x00 => Get,
+            0x01 => GetVersion,
+            0x02 => GetId,
+            0x11 => ReadMemory,
+            0x21 => Go,
+            0x31 => WriteMemory,
+            0x43 => Erase,
+            0x44 => ExtendedErase,
+            0x50 => Special,
+            0x51 => ExtendedSpecial,
+            0x63 => WriteProtect,
+            0x73 => WriteUnprotect,
+            0x82 => ReadoutProtect,
+            0x92 => ReadoutUnprotect,
+            0xA1 => GetChecksum,
+            _ => Unknown(value)
+        }
+    }
+}
+
+impl Display for Functions {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            Get => "Get",
+            GetVersion => "GetVersion",
+            GetId => "GetId",
+            ReadMemory => "ReadMemory",
+            Go => "Go",
+            WriteMemory => "WriteMemory",
+            Erase => "Erase",
+            ExtendedErase => "ExtendedErase",
+            Special => "Special",
+            ExtendedSpecial => "ExtendedSpecial",
+            WriteProtect => "WriteProtect",
+            WriteUnprotect => "WriteUnprotect",
+            ReadoutProtect => "ReadoutProtect",
+            ReadoutUnprotect => "ReadoutUnprotect",
+            GetChecksum => "GetChecksum",
+            Unknown(_) => "Unknown {}",
+        };
+        write!(f, "{}", name)
     }
 }

@@ -47,8 +47,6 @@ enum Commands {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
-    dbg!(&cli);
-
     if cli.porttype.is_none() {
         println!("Available serial ports:");
         print_available_serial_ports();
@@ -80,9 +78,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         },
         Ok(()) => {}
     };
+    println!("Connected to device on {}", portname);
+
+    println!("Retrieve bootloader version");
+    let f = connection.get_version()?;
+    println!("Bootloader version: {}", f);
 
     println!("Retrieve supported functions");
-    connection.supported_functions()?;
+    let f = connection.supported_functions()?;
+    f.iter().for_each(|f| println!("\t{}", f));
+
+    println!("Read option bytes");
+    let v = connection.read_memory(0x1fffc008, 16)?;
+    println!("{:02X?}", v);
 
     match cli.cmd {
         Commands::Unprotect => {
@@ -110,7 +118,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
 
             let mut address = 0_u32;
-            let mut start_address = 0_u32;
             for r in content {
                 let record = r?;
                 match record {
@@ -119,7 +126,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         println!("Base Address {:#08X}", address);
                     }
                     ihex::Record::StartLinearAddress(sla) => {
-                        start_address = sla;
+                        address = sla;
                         println!("Entrypoint is at {:#08X}", sla);
                     }
                     ihex::Record::Data { offset, value } => {
@@ -133,7 +140,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         Commands::Read => {
             println!("Read test data");
-            let v = connection.read_memory(0x8001000, 16)?;
+            let v = connection.read_memory(0x08000000, 16)?;
             println!("{:02X?}", v);
         }
         Commands::EraseAll => {

@@ -3,7 +3,6 @@ use crate::dfuloader::DfuLoaderError;
 use crate::dfuloader::DfuLoaderError::*;
 use crate::dfuloader::Functions;
 use core::time;
-use rppal::gpio::{Gpio, OutputPin};
 use spidev::{SpiModeFlags, Spidev, SpidevOptions, SpidevTransfer};
 use std::error::Error;
 use std::io::{Read, Write};
@@ -19,14 +18,12 @@ pub fn new_spi_connection(device_name: &String) -> Result<Box<dyn DfuLoader>, Bo
     spi.configure(&options)?;
 
     Ok(Box::new(SpiConnection {
-        spi,
-        nss: Gpio::new()?.get(25)?.into_output(),
+        spi
     }))
 }
 
 pub struct SpiConnection {
     spi: Spidev,
-    nss: OutputPin,
 }
 
 impl SpiConnection {
@@ -122,8 +119,6 @@ impl SpiConnection {
 
 impl DfuLoader for SpiConnection {
     fn initialize(&mut self) -> Result<(), DfuLoaderError> {
-        self.nss.set_low();
-
         let tx_buf = [0x5A, 0x00, 0x00, 0x79];
         let mut rx_buf = [0; 4];
         {
@@ -141,13 +136,17 @@ impl DfuLoader for SpiConnection {
         Ok(())
     }
 
+    fn get_version(&mut self) -> Result<u8, DfuLoaderError> {
+        return Err(NotImplemented())
+    }
+
     fn supported_functions(&mut self) -> Result<Vec<Functions>, DfuLoaderError> {
         self.send_command(0x00)?;
-        let data = self.read_variable_block()?;
+        let _data = self.read_variable_block()?;
 
         self.ack_frame()?;
 
-        return Ok(vec![Functions::Get]);
+        Ok(vec![Functions::Get])
     }
 
     fn write_unprotect(&mut self) -> Result<(), DfuLoaderError> {
@@ -193,11 +192,7 @@ impl DfuLoader for SpiConnection {
         Err(Timeout())
     }
 
-    fn read_memory(&mut self, address: u32, size: usize) -> Result<Vec<u8>, DfuLoaderError> {
-        if size > 256 {
-            return Err(ProtocolError());
-        }
-
+    fn read_memory(&mut self, address: u32, size: u8) -> Result<Vec<u8>, DfuLoaderError> {
         self.send_command(0x11)?;
 
         self.send_address(address)?;
@@ -206,7 +201,7 @@ impl DfuLoader for SpiConnection {
         self.send_size(size as u16)?;
         self.ack_frame()?;
 
-        let data = self.read_block(size)?;
+        let data = self.read_block(size as usize)?;
         Ok(data)
     }
 
@@ -272,11 +267,5 @@ impl DfuLoader for SpiConnection {
         self.ack_frame()?;
 
         Ok(())
-    }
-}
-
-impl Drop for SpiConnection {
-    fn drop(&mut self) {
-        self.nss.set_high();
     }
 }
