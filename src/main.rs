@@ -4,7 +4,22 @@ use std::error::Error;
 use std::fs::{read_dir, read_to_string, DirEntry};
 use std::path::PathBuf;
 use std::process::exit;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+
+use indicatif::{ProgressBar, ProgressStyle};
+
+/// Enables the raw protocol tracing in the bus implementations
+pub static VERBOSE: AtomicBool = AtomicBool::new(false);
+
+/// Like println!, but only when --verbose is given
+macro_rules! vprintln {
+    ($($arg:tt)*) => {
+        if $crate::VERBOSE.load(::std::sync::atomic::Ordering::Relaxed) {
+            println!($($arg)*);
+        }
+    };
+}
 
 mod dfuloader;
 mod serial;
@@ -22,13 +37,25 @@ struct Cli {
     #[arg(long = "port", help = "The name of a device port, e.g. spidev0.1")]
     portname: Option<String>,
 
+    #[arg(short, long, help = "Show the raw protocol traffic")]
+    verbose: bool,
+
     #[command(subcommand)]
     cmd: Commands,
 }
 
 #[derive(Subcommand, Debug, Clone)]
 enum Commands {
-    Read,
+    Read {
+        #[arg(long, default_value = "0x08000000", value_parser = parse_address, help = "Start address")]
+        address: u32,
+
+        #[arg(long, default_value_t = 16, help = "Number of bytes to read")]
+        size: u32,
+
+        #[arg(long, short, help = "Write the data to a file instead of printing a hex dump")]
+        output: Option<PathBuf>,
+    },
     Write {
         filename: PathBuf,
 
@@ -47,6 +74,7 @@ enum Commands {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
+    VERBOSE.store(cli.verbose, Ordering::Relaxed);
     if cli.porttype.is_none() {
         println!("Available serial ports:");
         print_available_serial_ports();
@@ -78,15 +106,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         },
         Ok(()) => {}
     };
-    println!("Connected to device on {}", portname);
-
-    println!("Retrieve bootloader version");
-    let f = connection.get_version()?;
-    println!("  Bootloader protocol version: 0x{:x}", f.version);
-
-    println!("Retrieve chip identification");
+    let version = connection.get_version()?;
     let chip_id = connection.get_id()?;
-    println!("  Chip ID 0x{:x}", chip_id.chipid);
 
     // Only the STM32F401 has been tested so far: 0x423 = xB/xC, 0x433 = xD/xE
     if !matches!(chip_id.chipid, 0x423 | 0x433) {
@@ -97,10 +118,24 @@ fn main() -> Result<(), Box<dyn Error>> {
         exit(1);
     }
 
-    println!("Retrieve supported functions");
-    let f = connection.supported_functions()?;
-    println!("  Bootloader version: 0x{:x}", f.version);
-    f.supported_functions.iter().for_each(|f| println!("  {}", f));
+    let functions = connection.supported_functions()?;
+    println!("Connected to {} ({})", portname, porttype);
+    println!(
+        "  Chip ID {:#05x}, bootloader v{}.{} (protocol {:#04x})",
+        chip_id.chipid,
+        version.version >> 4,
+        version.version & 0xF,
+        version.version
+    );
+    vprintln!(
+        "  Commands: {}",
+        functions
+            .supported_functions
+            .iter()
+            .map(|f| f.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 
     match cli.cmd {
         Commands::Unprotect => {
@@ -118,58 +153,77 @@ fn main() -> Result<(), Box<dyn Error>> {
             erase,
             go,
         } => {
-            println!("Write {:?}", filename);
-
             let ihex = read_to_string(filename.as_path())?;
-            let content = Reader::new(&ihex);
+
+            // Parse everything up front so we know the total size
+            let mut chunks: Vec<(u32, Vec<u8>)> = vec![];
+            let mut base = 0_u32;
+            let mut start_address: Option<u32> = None;
+            for r in Reader::new(&ihex) {
+                match r? {
+                    ihex::Record::ExtendedLinearAddress(ela) => base = (ela as u32) << 16,
+                    ihex::Record::StartLinearAddress(sla) => start_address = Some(sla),
+                    ihex::Record::Data { offset, value } => {
+                        chunks.push((base + offset as u32, value))
+                    }
+                    ihex::Record::EndOfFile => {}
+                    x => eprintln!("Ignored record: {:?}", x),
+                }
+            }
+            let total: u64 = chunks.iter().map(|(_, d)| d.len() as u64).sum();
+            println!("Writing {} ({} bytes)", filename.display(), total);
 
             if erase {
-                println!("Sending full erase command");
+                let spinner = ProgressBar::new_spinner().with_message("Erasing flash");
+                spinner.enable_steady_tick(Duration::from_millis(100));
                 connection.erase_all()?;
+                spinner.finish_with_message("Erased flash");
             }
 
-            let mut address = 0_u32;
-            let mut start_address: Option<u32> = None;
-            let mut bytes = 0;
-            for r in content {
-                let record = r?;
-                match record {
-                    ihex::Record::ExtendedLinearAddress(ela) => {
-                        address = (ela as u32) << 16;
-                        println!("Base Address {:#08X}", address);
-                    }
-                    ihex::Record::StartLinearAddress(sla) => {
-                        start_address = Some(sla);
-                        println!("Entrypoint is at {:#08X}", sla);
-                    }
-                    ihex::Record::Data { offset, value } => {
-                        bytes += value.len() as u32;
-                        connection.write_memory(address + offset as u32, value)?;
-                        print!("Write {:#08X}\r", address + offset as u32);
-                    }
-                    ihex::Record::EndOfFile => {
-                        println!("EndOfFile, {} bytes written", bytes);
-                    }
-                    x => {
-                        println!("Ignored record: {:?}", x)
-                    }
-                }
+            let bar = progress_bar(total, "Writing");
+            for (address, data) in chunks {
+                let len = data.len() as u64;
+                connection.write_memory(address, data)?;
+                bar.inc(len);
+            }
+            bar.finish_with_message("Written");
+
+            if let Some(sla) = start_address {
+                println!("Entrypoint is at {:#010X}", sla);
             }
 
             if go {
                 match start_address {
                     Some(sla) => {
-                        println!("Jumping to {:#08X}", sla);
+                        println!("Jumping to {:#010X}", sla);
                         connection.go(sla)?;
                     }
-                    None => println!("No start address in {:?}, not executing", filename),
+                    None => println!("No start address in {}, not executing", filename.display()),
                 }
             }
         }
-        Commands::Read => {
-            println!("Read test data");
-            let v = connection.read_memory(0x08000000, 16)?;
-            println!("{:02X?}", v);
+        Commands::Read {
+            address,
+            size,
+            output,
+        } => {
+            let bar = progress_bar(size as u64, "Reading");
+            let mut data: Vec<u8> = Vec::with_capacity(size as usize);
+            while (data.len() as u32) < size {
+                let n = (size - data.len() as u32).min(255) as u8;
+                let chunk = connection.read_memory(address + data.len() as u32, n)?;
+                bar.inc(chunk.len() as u64);
+                data.extend(chunk);
+            }
+            bar.finish_with_message("Read");
+
+            match output {
+                Some(path) => {
+                    std::fs::write(&path, &data)?;
+                    println!("{} bytes written to {}", data.len(), path.display());
+                }
+                None => print_hexdump(address, &data),
+            }
         }
         Commands::EraseAll => {
             connection.erase_all()?;
@@ -182,6 +236,34 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     return Ok({});
+}
+
+fn parse_address(s: &str) -> Result<u32, String> {
+    u32::from_str_radix(s.trim_start_matches("0x"), 16).map_err(|e| e.to_string())
+}
+
+fn progress_bar(total: u64, message: &'static str) -> ProgressBar {
+    let bar = ProgressBar::new(total);
+    bar.set_style(
+        ProgressStyle::with_template(
+            "{msg:8} [{bar:40.cyan/blue}] {bytes}/{total_bytes} {bytes_per_sec} eta {eta}",
+        )
+        .unwrap()
+        .progress_chars("=> "),
+    );
+    bar.set_message(message);
+    bar
+}
+
+fn print_hexdump(address: u32, data: &[u8]) {
+    for (i, row) in data.chunks(16).enumerate() {
+        let hex: Vec<String> = row.iter().map(|b| format!("{:02X}", b)).collect();
+        let ascii: String = row
+            .iter()
+            .map(|&b| if (0x20..0x7F).contains(&b) { b as char } else { '.' })
+            .collect();
+        println!("{:#010X}  {:<47}  {}", address + (i * 16) as u32, hex.join(" "), ascii);
+    }
 }
 
 fn print_available_serial_ports() {

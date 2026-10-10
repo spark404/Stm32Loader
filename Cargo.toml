@@ -8,3 +8,4 @@ serialport = "4.3.0"
 clap = { version = "4.5.9", features = ["derive"] }
 spidev = "0.6.0"
 ihex = "3.0"
+indicatif = "0.17"
