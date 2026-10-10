@@ -62,6 +62,9 @@ enum Commands {
         #[arg(long = "erase", help = "Perform full erase before writing")]
         erase: bool,
 
+        #[arg(long = "verify", help = "Read the memory back and compare it after writing")]
+        verify: bool,
+
         #[arg(long = "go", help = "Execute go if the ihex file has a start address")]
         go: bool,
     },
@@ -151,6 +154,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Commands::Write {
             filename,
             erase,
+            verify,
             go,
         } => {
             let ihex = read_to_string(filename.as_path())?;
@@ -181,12 +185,46 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
 
             let bar = progress_bar(total, "Writing");
+            let written = if verify { chunks.clone() } else { vec![] };
             for (address, data) in chunks {
                 let len = data.len() as u64;
                 connection.write_memory(address, data)?;
                 bar.inc(len);
             }
             bar.finish_with_message("Written");
+
+            if verify {
+                let regions = merge_contiguous(&written);
+                let total: u64 = regions.iter().map(|(_, d)| d.len() as u64).sum();
+                let bar = progress_bar(total, "Verifying");
+                let mut mismatches = 0_u32;
+                for (address, expected) in &regions {
+                    let mut offset = 0;
+                    while offset < expected.len() {
+                        let n = (expected.len() - offset).min(255);
+                        let actual = connection.read_memory(address + offset as u32, n as u8)?;
+                        if let Some(i) = (0..n).find(|&i| actual[i] != expected[offset + i]) {
+                            bar.suspend(|| {
+                                eprintln!(
+                                    "Mismatch at {:#010X}: expected {:02X}, read {:02X}",
+                                    address + (offset + i) as u32,
+                                    expected[offset + i],
+                                    actual[i]
+                                )
+                            });
+                            mismatches += 1;
+                        }
+                        offset += n;
+                        bar.inc(n as u64);
+                    }
+                }
+                if mismatches > 0 {
+                    bar.abandon_with_message("Failed");
+                    eprintln!("Verification failed: {} block(s) differ", mismatches);
+                    exit(1);
+                }
+                bar.finish_with_message("Verified");
+            }
 
             if let Some(sla) = start_address {
                 println!("Entrypoint is at {:#010X}", sla);
@@ -236,6 +274,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     return Ok({});
+}
+
+/// Join records that directly follow each other into larger regions
+fn merge_contiguous(chunks: &[(u32, Vec<u8>)]) -> Vec<(u32, Vec<u8>)> {
+    let mut regions: Vec<(u32, Vec<u8>)> = vec![];
+    for (address, data) in chunks {
+        match regions.last_mut() {
+            Some((start, region)) if *start + region.len() as u32 == *address => {
+                region.extend_from_slice(data)
+            }
+            _ => regions.push((*address, data.clone())),
+        }
+    }
+    regions
 }
 
 fn parse_address(s: &str) -> Result<u32, String> {
@@ -292,5 +344,23 @@ fn print_available_spi_ports() {
         .collect();
     for p in &devices {
         println!("{:?}", p.file_name());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_contiguous;
+
+    #[test]
+    fn merges_only_adjacent_records() {
+        let chunks = vec![
+            (0x0800_0000, vec![1, 2, 3, 4]),
+            (0x0800_0004, vec![5, 6]),
+            (0x0800_1000, vec![7]),
+        ];
+        assert_eq!(
+            merge_contiguous(&chunks),
+            vec![(0x0800_0000, vec![1, 2, 3, 4, 5, 6]), (0x0800_1000, vec![7])]
+        );
     }
 }
