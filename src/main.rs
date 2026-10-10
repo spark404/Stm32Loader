@@ -88,14 +88,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     let chip_id = connection.get_id()?;
     println!("  Chip ID 0x{:x}", chip_id.chipid);
 
+    // Only the STM32F401 has been tested so far: 0x423 = xB/xC, 0x433 = xD/xE
+    if !matches!(chip_id.chipid, 0x423 | 0x433) {
+        eprintln!(
+            "Unsupported target (chip ID 0x{:x}), only STM32F401 is supported",
+            chip_id.chipid
+        );
+        exit(1);
+    }
+
     println!("Retrieve supported functions");
     let f = connection.supported_functions()?;
     println!("  Bootloader version: 0x{:x}", f.version);
     f.supported_functions.iter().for_each(|f| println!("  {}", f));
-
-    println!("Read option bytes");
-    let v = connection.read_memory(0x1fffc008, 16)?;
-    println!("{:02X?}", v);
 
     match cli.cmd {
         Commands::Unprotect => {
@@ -124,6 +129,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
 
             let mut address = 0_u32;
+            let mut start_address: Option<u32> = None;
             let mut bytes = 0;
             for r in content {
                 let record = r?;
@@ -133,7 +139,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         println!("Base Address {:#08X}", address);
                     }
                     ihex::Record::StartLinearAddress(sla) => {
-                        address = sla;
+                        start_address = Some(sla);
                         println!("Entrypoint is at {:#08X}", sla);
                     }
                     ihex::Record::Data { offset, value } => {
@@ -147,6 +153,16 @@ fn main() -> Result<(), Box<dyn Error>> {
                     x => {
                         println!("Ignored record: {:?}", x)
                     }
+                }
+            }
+
+            if go {
+                match start_address {
+                    Some(sla) => {
+                        println!("Jumping to {:#08X}", sla);
+                        connection.go(sla)?;
+                    }
+                    None => println!("No start address in {:?}, not executing", filename),
                 }
             }
         }

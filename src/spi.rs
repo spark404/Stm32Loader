@@ -7,7 +7,6 @@ use spidev::{SpiModeFlags, Spidev, SpidevOptions, SpidevTransfer};
 use std::error::Error;
 use std::io::{Read, Write};
 use std::thread;
-use crate::dfuloader::Functions::Get;
 
 pub fn new_spi_connection(device_name: &String) -> Result<Box<dyn DfuLoader>, Box<dyn Error>> {
     let mut spi = Spidev::open(format!("/dev/{}", device_name))?;
@@ -138,22 +137,44 @@ impl DfuLoader for SpiConnection {
     }
 
     fn get_version(&mut self) -> Result<BootloaderOptions, DfuLoaderError> {
-        return Err(NotImplemented())
+        self.send_command(0x01)?;
+
+        // Dummy byte, version, option byte 1, option byte 2
+        let data = self.read_block(3)?;
+        self.ack_frame()?;
+
+        Ok(BootloaderOptions {
+            version: data[1],
+            options: (data[2] as u16) << 8 | data[3] as u16,
+        })
     }
 
     fn get_id(&mut self) -> Result<BootloaderChipId, DfuLoaderError> {
-        Err(NotImplemented())
+        self.send_command(0x02)?;
+        let data = self.read_variable_block()?;
+        self.ack_frame()?;
+
+        // The product ID is always two bytes (N = 1)
+        if data.len() != 2 {
+            return Err(ProtocolError());
+        }
+
+        Ok(BootloaderChipId {
+            chipid: (data[0] as u16) << 8 | data[1] as u16,
+        })
     }
 
     fn supported_functions(&mut self) -> Result<BootLoaderInfo, DfuLoaderError> {
         self.send_command(0x00)?;
-        let _data = self.read_variable_block()?;
+        let data = self.read_variable_block()?;
 
         self.ack_frame()?;
 
-        Ok(BootLoaderInfo{
-            version: 0,
-            supported_functions: vec!(Get)
+        // First byte is the bootloader version, the rest are command codes
+        let (version, commands) = data.split_first().ok_or(ProtocolError())?;
+        Ok(BootLoaderInfo {
+            version: *version,
+            supported_functions: commands.iter().map(|&c| Functions::from(c)).collect(),
         })
     }
 

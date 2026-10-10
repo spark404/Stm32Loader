@@ -102,7 +102,7 @@ impl DfuLoader for SerialConnection {
         }
 
         let mut function: Vec<Functions> = vec![];
-        response[1..n-2].iter().for_each(|&x | function.push(Functions::from(x)));
+        response[1..n-1].iter().for_each(|&x | function.push(Functions::from(x)));
         let bootloader_info = BootLoaderInfo {
             version: response[0],
             supported_functions: function
@@ -161,11 +161,17 @@ impl DfuLoader for SerialConnection {
 
         send_command(&mut self.port, 0x31)?;
 
-        let mut data = [0u8; 5];
-        data[0..4].copy_from_slice(address.to_be_bytes().as_ref());
-        data[4] = calculate_checksum(&data[0..4]);
-        self.port.write_all(data.as_ref())?;
+        let mut addr = [0u8; 5];
+        addr[0..4].copy_from_slice(address.to_be_bytes().as_ref());
+        addr[4] = calculate_checksum(&addr[0..4]);
+        self.port.write_all(addr.as_ref())?;
         read_ack(&mut self.port)?;
+
+        // The bootloader requires a multiple of 4 bytes; pad with erased-flash value
+        let mut data = data;
+        while data.len() % 4 != 0 {
+            data.push(0xFF);
+        }
 
         let mut out = vec![(data.len() - 1) as u8];
         out.extend(data);
