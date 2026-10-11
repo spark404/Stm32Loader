@@ -65,11 +65,13 @@ enum Commands {
         #[arg(long = "verify", help = "Read the memory back and compare it after writing")]
         verify: bool,
 
-        #[arg(long = "go", help = "Execute go if the ihex file has a start address")]
+        #[arg(long = "go", help = "Start the application after writing (jumps to the vector table at the lowest written address)")]
         go: bool,
     },
     Unprotect,
     EraseAll,
+    /// Jump to the application. The address is that of its vector table (initial SP, then reset
+    /// handler), e.g. 0x08000000, not the address of the reset handler itself.
     Go {
         address: String
     }
@@ -175,6 +177,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
             let total: u64 = chunks.iter().map(|(_, d)| d.len() as u64).sum();
+            // The Go command wants the vector table (SP at +0, reset handler at +4), which
+            // sits at the start of the image, not at the ihex start address.
+            let vector_table = chunks.iter().map(|(a, _)| *a).min();
             println!("Writing {} ({} bytes)", filename.display(), total);
 
             if erase {
@@ -231,12 +236,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
 
             if go {
-                match start_address {
-                    Some(sla) => {
-                        println!("Jumping to {:#010X}", sla);
-                        connection.go(sla)?;
+                match vector_table {
+                    Some(table) => {
+                        println!("Jumping to application, vector table at {:#010X}", table);
+                        connection.go(table)?;
                     }
-                    None => println!("No start address in {}, not executing", filename.display()),
+                    None => println!("Nothing was written, not executing"),
                 }
             }
         }
