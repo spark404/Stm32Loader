@@ -284,12 +284,12 @@ impl DfuLoader for SpiConnection {
                     }
                 },
                 Ok(_) => {
-                    break;
+                    return Ok(());
                 }
             }
         }
 
-        return Ok(());
+        Err(Timeout())
     }
 
     fn go(&mut self, address: u32) -> Result<(), DfuLoaderError> {

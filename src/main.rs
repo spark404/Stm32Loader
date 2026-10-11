@@ -183,10 +183,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             println!("Writing {} ({} bytes)", filename.display(), total);
 
             if erase {
-                let spinner = ProgressBar::new_spinner().with_message("Erasing flash");
-                spinner.enable_steady_tick(Duration::from_millis(100));
-                connection.erase_all()?;
-                spinner.finish_with_message("Erased flash");
+                erase_all(connection.as_mut())?;
             }
 
             let bar = progress_bar(total, "Writing");
@@ -269,7 +266,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
         Commands::EraseAll => {
-            connection.erase_all()?;
+            erase_all(connection.as_mut())?;
         }
         Commands::Go { address } => {
             let without_prefix = address.trim_start_matches("0x");
@@ -293,6 +290,31 @@ fn merge_contiguous(chunks: &[(u32, Vec<u8>)]) -> Vec<(u32, Vec<u8>)> {
         }
     }
     regions
+}
+
+/// Full chip erase with a spinner, as it can take several seconds
+fn erase_all(connection: &mut dyn dfuloader::DfuLoader) -> Result<(), dfuloader::DfuLoaderError> {
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::with_template("{spinner} {msg} ({elapsed})")
+            .unwrap()
+            .tick_chars("|/-\\ "),
+    );
+    spinner.set_message("Erasing flash");
+    spinner.enable_steady_tick(Duration::from_millis(100));
+
+    match connection.erase_all() {
+        Ok(()) => {
+            spinner.set_style(ProgressStyle::with_template("{msg} ({elapsed})").unwrap());
+            spinner.finish_with_message("Erased flash");
+            Ok(())
+        }
+        Err(e) => {
+            spinner.set_style(ProgressStyle::with_template("{msg} ({elapsed})").unwrap());
+            spinner.abandon_with_message("Erase failed");
+            Err(e)
+        }
+    }
 }
 
 fn parse_address(s: &str) -> Result<u32, String> {
